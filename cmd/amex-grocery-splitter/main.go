@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/victorpero/amex-grocery-splitter-se/internal/matcher"
 	"github.com/victorpero/amex-grocery-splitter-se/internal/parser"
+	"github.com/victorpero/amex-grocery-splitter-se/internal/report"
 	"github.com/victorpero/amex-grocery-splitter-se/internal/split"
 	"github.com/victorpero/amex-grocery-splitter-se/internal/transaction"
 )
@@ -55,11 +55,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	matched, unmatched := filterTransactions(transactions, groceryMatcher)
-	sortTransactions(matched)
-	sortTransactions(unmatched)
+	analysis := report.Analyze(transactions, groceryMatcher, config.amountMode)
 
-	if err := printReport(stdout, config, matched, unmatched); err != nil {
+	if err := printReport(stdout, config, analysis); err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
@@ -116,50 +114,26 @@ func readTransactions(files []string) ([]transaction.Transaction, error) {
 	return transactions, nil
 }
 
-func filterTransactions(transactions []transaction.Transaction, groceryMatcher *matcher.PrefixMatcher) ([]transaction.Transaction, []transaction.Transaction) {
-	matched := make([]transaction.Transaction, 0)
-	unmatched := make([]transaction.Transaction, 0)
-	for _, tx := range transactions {
-		if groceryMatcher.IsGrocery(tx.Description) {
-			matched = append(matched, tx)
-		} else {
-			unmatched = append(unmatched, tx)
-		}
-	}
-	return matched, unmatched
-}
-
-func sortTransactions(transactions []transaction.Transaction) {
-	sort.SliceStable(transactions, func(i, j int) bool {
-		if transactions[i].Date.Equal(transactions[j].Date) {
-			return transactions[i].Description < transactions[j].Description
-		}
-		return transactions[i].Date.Before(transactions[j].Date)
-	})
-}
-
-func printReport(output io.Writer, config cliConfig, matched []transaction.Transaction, unmatched []transaction.Transaction) error {
-	result := split.Calculate(matched, config.amountMode)
-
+func printReport(output io.Writer, config cliConfig, analysis report.Analysis) error {
 	fmt.Fprintln(output, "Matched grocery transactions")
-	if len(matched) == 0 {
+	if len(analysis.Matched) == 0 {
 		fmt.Fprintln(output, "No grocery transactions matched.")
 	} else {
-		printTransactions(output, config.currency, config.amountMode, matched)
+		printTransactions(output, config.currency, config.amountMode, analysis.Matched)
 	}
 
 	fmt.Fprintln(output)
-	fmt.Fprintf(output, "Matched transactions: %d\n", len(matched))
-	fmt.Fprintf(output, "Total grocery amount: %s\n", split.FormatCents(config.currency, result.TotalCents))
-	fmt.Fprintf(output, "Amount per person:   %s\n", split.FormatHalfCents(config.currency, result.TotalCents))
+	fmt.Fprintf(output, "Matched transactions: %d\n", len(analysis.Matched))
+	fmt.Fprintf(output, "Total grocery amount: %s\n", split.FormatCents(config.currency, analysis.Result.TotalCents))
+	fmt.Fprintf(output, "Amount per person:   %s\n", split.FormatHalfCents(config.currency, analysis.Result.TotalCents))
 
 	if config.showUnmatched {
 		fmt.Fprintln(output)
 		fmt.Fprintln(output, "Unmatched transactions")
-		if len(unmatched) == 0 {
+		if len(analysis.Unmatched) == 0 {
 			fmt.Fprintln(output, "No unmatched transactions.")
 		} else {
-			printTransactions(output, config.currency, config.amountMode, unmatched)
+			printTransactions(output, config.currency, config.amountMode, analysis.Unmatched)
 		}
 	}
 
@@ -174,18 +148,11 @@ func printTransactions(output io.Writer, currency string, mode split.AmountMode,
 			writer,
 			"%s\t%s\t%s\t%s:%d\n",
 			tx.Date.Format("2006-01-02"),
-			split.FormatCents(currency, displayAmountCents(tx.AmountCents, mode)),
+			split.FormatCents(currency, report.DisplayAmountCents(tx.AmountCents, mode)),
 			tx.Description,
 			tx.SourceFile,
 			tx.SourceLine,
 		)
 	}
 	writer.Flush()
-}
-
-func displayAmountCents(amount int64, mode split.AmountMode) int64 {
-	if mode == split.AmountModeAbsolute && amount < 0 {
-		return -amount
-	}
-	return amount
 }
