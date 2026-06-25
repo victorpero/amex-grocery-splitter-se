@@ -1,0 +1,8 @@
+# Grocery store prefixes, one per line.
+# Matching is case-insensitive and trims surrounding whitespace.
+HEMKOP
+ICA
+MAXI ICA
+WILLYS
+COOP
+PRESSBYRÅN
