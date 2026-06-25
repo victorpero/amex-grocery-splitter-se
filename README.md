@@ -10,10 +10,22 @@ First, open a terminal and go to this project directory:
 cd ~/dev/amex-grocery-splitter-se
 ```
 
+On Windows PowerShell, the same step looks like:
+
+```powershell
+cd $HOME\dev\amex-grocery-splitter-se
+```
+
 The simplest way to run the app while developing is with `go run`:
 
 ```sh
 go run ./cmd/amex-grocery-splitter "$HOME/Downloads/activity.csv"
+```
+
+On Windows PowerShell:
+
+```powershell
+go run ./cmd/amex-grocery-splitter "$HOME\Downloads\activity.csv"
 ```
 
 To show transactions that did not match a grocery-store prefix:
@@ -30,7 +42,9 @@ go run ./cmd/amex-grocery-splitter file1.csv file2.csv
 
 ## Building A Local Binary
 
-If you want to run `amex-grocery-splitter` directly instead of typing `go run ...`, build it first:
+If you want to avoid typing `go run ...`, build a local binary first.
+
+macOS and Linux:
 
 ```sh
 cd ~/dev/amex-grocery-splitter-se
@@ -44,9 +58,78 @@ Then run the built binary:
 ./bin/amex-grocery-splitter --show-unmatched "$HOME/Downloads/activity.csv"
 ```
 
-## Installed Usage
+Windows PowerShell:
 
-If the binary is installed somewhere on your `PATH`, you can run it as:
+```powershell
+cd $HOME\dev\amex-grocery-splitter-se
+go build -o bin\amex-grocery-splitter.exe ./cmd/amex-grocery-splitter
+```
+
+Then run the built binary:
+
+```powershell
+.\bin\amex-grocery-splitter.exe "$HOME\Downloads\activity.csv"
+.\bin\amex-grocery-splitter.exe --show-unmatched "$HOME\Downloads\activity.csv"
+```
+
+The `./bin/...` or `.\bin\...` prefix is important. It tells your shell to run the binary from this project folder. Without installing the binary on your `PATH`, this will not work:
+
+```sh
+amex-grocery-splitter "$HOME/Downloads/activity.csv"
+```
+
+## Installing On Your PATH
+
+Install the command if you want to run `amex-grocery-splitter` from any folder without the `./bin/...` prefix:
+
+```sh
+go install ./cmd/amex-grocery-splitter
+```
+
+Go installs binaries into `GOPATH/bin`. By default, that is usually:
+
+- macOS and Linux: `$HOME/go/bin`
+- Windows: `%USERPROFILE%\go\bin`
+
+If that directory is on your `PATH`, this works from any folder:
+
+```sh
+amex-grocery-splitter "$HOME/Downloads/activity.csv"
+```
+
+On Windows PowerShell:
+
+```powershell
+amex-grocery-splitter "$HOME\Downloads\activity.csv"
+```
+
+If macOS or Linux says `command not found`, add Go's bin directory to your shell path.
+
+For zsh, which is the default shell on modern macOS:
+
+```sh
+echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+For bash:
+
+```sh
+echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+If Windows says the command is not recognized, add this folder to your user `Path` environment variable:
+
+```text
+%USERPROFILE%\go\bin
+```
+
+Then open a new PowerShell window.
+
+## Usage Examples
+
+Once you are using either `go run`, a local binary, or an installed binary, the available flags are the same. These examples assume the binary is installed on your `PATH`:
 
 ```sh
 amex-grocery-splitter transactions.csv
