@@ -15,6 +15,30 @@ Default grocery prefixes:
 - COOP
 - PRESSBYRÅN
 
+## Running The Local Web GUI
+
+Start the local web UI:
+
+```sh
+go run ./cmd/amex-grocery-splitter-web
+```
+
+Then open this address in your browser:
+
+```text
+http://localhost:8080
+```
+
+The web UI lets you upload one or more AmEx CSV files, edit grocery prefixes, choose signed or absolute amount handling, and review matched and unmatched transactions.
+
+By default, the web server only listens on your own machine at `127.0.0.1:8080`. To make it reachable from other devices on your local network later, bind it to all network interfaces:
+
+```sh
+go run ./cmd/amex-grocery-splitter-web -addr 0.0.0.0:8080
+```
+
+For a container or home-server deployment, use the same `-addr 0.0.0.0:8080` setting and publish port `8080`.
+
 ## Running From The CLI
 
 First, open a terminal and go to this project directory:
@@ -52,30 +76,6 @@ To process multiple CSV files at once:
 ```sh
 go run ./cmd/amex-grocery-splitter file1.csv file2.csv
 ```
-
-## Running The Local Web GUI
-
-Start the local web UI:
-
-```sh
-go run ./cmd/amex-grocery-splitter-web
-```
-
-Then open this address in your browser:
-
-```text
-http://localhost:8080
-```
-
-The web UI lets you upload one or more AmEx CSV files, edit grocery prefixes, choose signed or absolute amount handling, and review matched and unmatched transactions.
-
-By default, the web server only listens on your own machine at `127.0.0.1:8080`. To make it reachable from other devices on your local network later, bind it to all network interfaces:
-
-```sh
-go run ./cmd/amex-grocery-splitter-web -addr 0.0.0.0:8080
-```
-
-For a container or home-server deployment, use the same `-addr 0.0.0.0:8080` setting and publish port `8080`.
 
 ## Building A Local Binary
 
