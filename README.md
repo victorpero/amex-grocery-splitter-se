@@ -2,23 +2,67 @@
 
 A local CLI tool for finding Swedish grocery transactions in American Express CSV exports and splitting the total between two people.
 
-## Usage
+## Running From The CLI
+
+First, open a terminal and go to this project directory:
+
+```sh
+cd ~/dev/amex-grocery-splitter-se
+```
+
+The simplest way to run the app while developing is with `go run`:
+
+```sh
+go run ./cmd/amex-grocery-splitter "$HOME/Downloads/activity.csv"
+```
+
+To show transactions that did not match a grocery-store prefix:
+
+```sh
+go run ./cmd/amex-grocery-splitter --show-unmatched "$HOME/Downloads/activity.csv"
+```
+
+To process multiple CSV files at once:
+
+```sh
+go run ./cmd/amex-grocery-splitter file1.csv file2.csv
+```
+
+## Building A Local Binary
+
+If you want to run `amex-grocery-splitter` directly instead of typing `go run ...`, build it first:
+
+```sh
+cd ~/dev/amex-grocery-splitter-se
+go build -o bin/amex-grocery-splitter ./cmd/amex-grocery-splitter
+```
+
+Then run the built binary:
+
+```sh
+./bin/amex-grocery-splitter "$HOME/Downloads/activity.csv"
+./bin/amex-grocery-splitter --show-unmatched "$HOME/Downloads/activity.csv"
+```
+
+## Installed Usage
+
+If the binary is installed somewhere on your `PATH`, you can run it as:
 
 ```sh
 amex-grocery-splitter transactions.csv
 amex-grocery-splitter file1.csv file2.csv
 ```
 
-From the repository during development:
-
-```sh
-go run ./cmd/amex-grocery-splitter transactions.csv
-```
-
 Show unmatched transactions for review:
 
 ```sh
 amex-grocery-splitter --show-unmatched transactions.csv
+```
+
+Use signed amounts to inspect refunds or credits:
+
+```sh
+amex-grocery-splitter --amount-mode signed transactions.csv
 ```
 
 Use a custom grocery-prefix file:
