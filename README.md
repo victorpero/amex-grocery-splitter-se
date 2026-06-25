@@ -1,6 +1,19 @@
 # amex-grocery-splitter-se
 
-A local CLI tool for finding Swedish grocery transactions in American Express CSV exports and splitting the total between two people.
+A local CLI tool for reading American Express CSV exports, finding Swedish grocery transactions, summing them, and splitting the total between two people.
+
+## Matching
+
+The first version matches grocery transactions by transaction-description prefix. Matching is case-insensitive, trims whitespace, and handles Swedish letters such as Å, Ä, and Ö.
+
+Default grocery prefixes:
+
+- HEMKOP
+- ICA
+- MAXI ICA
+- WILLYS
+- COOP
+- PRESSBYRÅN
 
 ## Running From The CLI
 
@@ -155,19 +168,6 @@ amex-grocery-splitter --stores config/grocery_stores.txt transactions.csv
 ```
 
 The store file is one prefix per line. Blank lines and lines starting with `#` are ignored.
-
-## Matching
-
-The first version matches grocery transactions by transaction-description prefix. Matching is case-insensitive, trims whitespace, and handles Swedish letters such as Å, Ä, and Ö.
-
-Default grocery prefixes:
-
-- HEMKOP
-- ICA
-- MAXI ICA
-- WILLYS
-- COOP
-- PRESSBYRÅN
 
 ## Amounts
 
