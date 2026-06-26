@@ -1,6 +1,16 @@
 # amex-grocery-splitter-se
 
-A local CLI tool for reading American Express CSV exports, finding Swedish grocery transactions, summing them, and splitting the total between two people.
+A mainly web-based local app for splitting Swedish grocery costs from American Express CSV exports. It is used to upload one or more AmEx activity files, identify grocery transactions, total the matching purchases, and calculate how much each of two people should pay.
+
+Functionality includes:
+
+- Local web UI for uploading and reviewing AmEx CSV files
+- Matching Swedish grocery transactions by configurable store prefixes
+- Summing matched grocery purchases across one or more files
+- Splitting the grocery total between two people
+- Reviewing matched and unmatched transactions
+- Choosing whether amounts are handled as absolute costs or signed values
+- CLI support for the same core CSV processing workflow
 
 ## Matching
 
