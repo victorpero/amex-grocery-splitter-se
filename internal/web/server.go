@@ -1,11 +1,16 @@
 package web
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"mime/multipart"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/victorpero/amex-grocery-splitter-se/internal/matcher"
 	"github.com/victorpero/amex-grocery-splitter-se/internal/parser"
@@ -26,16 +31,19 @@ type Server struct {
 }
 
 type pageData struct {
-	Form          formData
-	Error         string
-	HasResult     bool
-	TotalFiles    int
-	TotalRows     int
-	Matched       []viewTransaction
-	Unmatched     []viewTransaction
-	ShowUnmatched bool
-	TotalAmount   string
-	PerPerson     string
+	Form                  formData
+	Error                 string
+	HasResult             bool
+	HasStoredTransactions bool
+	TotalFiles            int
+	TotalRows             int
+	MatchedTable          transactionTable
+	UnmatchedTable        transactionTable
+	ShowUnmatched         bool
+	TransactionsState     string
+	IncludedIDs           []string
+	TotalAmount           string
+	PerPerson             string
 }
 
 type formData struct {
@@ -45,10 +53,35 @@ type formData struct {
 }
 
 type viewTransaction struct {
+	ID          string
 	Date        string
 	Description string
 	Amount      string
 	Source      string
+}
+
+type transactionTable struct {
+	Rows       []viewTransaction
+	Selectable bool
+}
+
+type indexedTransaction struct {
+	ID string
+	TX transaction.Transaction
+}
+
+type storedState struct {
+	TotalFiles   int                 `json:"total_files"`
+	Transactions []storedTransaction `json:"transactions"`
+}
+
+type storedTransaction struct {
+	ID          string `json:"id"`
+	Date        string `json:"date"`
+	Description string `json:"description"`
+	AmountCents int64  `json:"amount_cents"`
+	SourceFile  string `json:"source_file"`
+	SourceLine  int    `json:"source_line"`
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -141,29 +174,61 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	files := r.MultipartForm.File["files"]
-	if len(files) == 0 {
-		data.Error = "Choose at least one American Express CSV file."
-		s.render(w, http.StatusBadRequest, data)
-		return
-	}
-
-	transactions, err := parseUploadedFiles(files)
+	transactions, totalFiles, err := transactionsFromRequest(files, r.FormValue("transactions_state"))
 	if err != nil {
 		data.Error = err.Error()
 		s.render(w, http.StatusBadRequest, data)
 		return
 	}
+	if len(transactions) == 0 {
+		data.Error = "Choose at least one American Express CSV file."
+		s.render(w, http.StatusBadRequest, data)
+		return
+	}
 
-	analysis := report.Analyze(transactions, groceryMatcher, amountMode)
+	includedIDs := includedIDsFromRequest(r)
+	if len(files) > 0 {
+		includedIDs = map[string]struct{}{}
+	}
+	analysis := analyzeTransactions(transactions, groceryMatcher, includedIDs, amountMode)
+	filteredIncludedIDs := filterIncludedIDs(transactions, includedIDs)
+
 	data.HasResult = true
-	data.TotalFiles = len(files)
+	data.HasStoredTransactions = true
+	data.TotalFiles = totalFiles
 	data.TotalRows = len(transactions)
-	data.Matched = toViewTransactions(analysis.Matched, form.Currency, amountMode)
-	data.Unmatched = toViewTransactions(analysis.Unmatched, form.Currency, amountMode)
+	data.MatchedTable = transactionTable{
+		Rows: toViewTransactions(analysis.Matched, form.Currency, amountMode),
+	}
+	data.UnmatchedTable = transactionTable{
+		Rows:       toViewTransactions(analysis.Unmatched, form.Currency, amountMode),
+		Selectable: true,
+	}
+	data.TransactionsState = encodeTransactionsState(transactions, totalFiles)
+	data.IncludedIDs = filteredIncludedIDs
 	data.TotalAmount = split.FormatCents(form.Currency, analysis.Result.TotalCents)
 	data.PerPerson = split.FormatHalfCents(form.Currency, analysis.Result.TotalCents)
 
 	s.render(w, http.StatusOK, data)
+}
+
+func transactionsFromRequest(files []*multipart.FileHeader, encodedState string) ([]indexedTransaction, int, error) {
+	if len(files) > 0 {
+		transactions, err := parseUploadedFiles(files)
+		if err != nil {
+			return nil, 0, err
+		}
+		return indexTransactions(transactions), len(files), nil
+	}
+
+	if strings.TrimSpace(encodedState) == "" {
+		return nil, 0, nil
+	}
+	transactions, totalFiles, err := decodeTransactionsState(encodedState)
+	if err != nil {
+		return nil, 0, err
+	}
+	return transactions, totalFiles, nil
 }
 
 func parseUploadedFiles(files []*multipart.FileHeader) ([]transaction.Transaction, error) {
@@ -187,14 +252,161 @@ func parseUploadedFiles(files []*multipart.FileHeader) ([]transaction.Transactio
 	return transactions, nil
 }
 
-func toViewTransactions(transactions []transaction.Transaction, currency string, amountMode split.AmountMode) []viewTransaction {
+func indexTransactions(transactions []transaction.Transaction) []indexedTransaction {
+	indexed := make([]indexedTransaction, 0, len(transactions))
+	for index, tx := range transactions {
+		indexed = append(indexed, indexedTransaction{
+			ID: strconv.Itoa(index),
+			TX: tx,
+		})
+	}
+	return indexed
+}
+
+type indexedAnalysis struct {
+	Matched   []indexedTransaction
+	Unmatched []indexedTransaction
+	Result    split.Result
+}
+
+func analyzeTransactions(transactions []indexedTransaction, groceryMatcher *matcher.PrefixMatcher, includedIDs map[string]struct{}, amountMode split.AmountMode) indexedAnalysis {
+	matched := make([]indexedTransaction, 0)
+	unmatched := make([]indexedTransaction, 0)
+
+	for _, tx := range transactions {
+		_, manuallyIncluded := includedIDs[tx.ID]
+		if manuallyIncluded || groceryMatcher.IsGrocery(tx.TX.Description) {
+			matched = append(matched, tx)
+		} else {
+			unmatched = append(unmatched, tx)
+		}
+	}
+
+	sortIndexedTransactions(matched)
+	sortIndexedTransactions(unmatched)
+
+	return indexedAnalysis{
+		Matched:   matched,
+		Unmatched: unmatched,
+		Result:    split.Calculate(unindexedTransactions(matched), amountMode),
+	}
+}
+
+func sortIndexedTransactions(transactions []indexedTransaction) {
+	sort.SliceStable(transactions, func(i, j int) bool {
+		if transactions[i].TX.Date.Equal(transactions[j].TX.Date) {
+			return transactions[i].TX.Description < transactions[j].TX.Description
+		}
+		return transactions[i].TX.Date.Before(transactions[j].TX.Date)
+	})
+}
+
+func unindexedTransactions(transactions []indexedTransaction) []transaction.Transaction {
+	unindexed := make([]transaction.Transaction, 0, len(transactions))
+	for _, tx := range transactions {
+		unindexed = append(unindexed, tx.TX)
+	}
+	return unindexed
+}
+
+func includedIDsFromRequest(r *http.Request) map[string]struct{} {
+	included := make(map[string]struct{})
+	for _, id := range r.MultipartForm.Value["included_tx"] {
+		if id = strings.TrimSpace(id); id != "" {
+			included[id] = struct{}{}
+		}
+	}
+	for _, id := range r.MultipartForm.Value["include_tx"] {
+		if id = strings.TrimSpace(id); id != "" {
+			included[id] = struct{}{}
+		}
+	}
+	return included
+}
+
+func filterIncludedIDs(transactions []indexedTransaction, includedIDs map[string]struct{}) []string {
+	existingIDs := make(map[string]struct{}, len(transactions))
+	for _, tx := range transactions {
+		existingIDs[tx.ID] = struct{}{}
+	}
+
+	filtered := make([]string, 0, len(includedIDs))
+	for id := range includedIDs {
+		if _, ok := existingIDs[id]; ok {
+			filtered = append(filtered, id)
+		}
+	}
+	sort.Strings(filtered)
+	return filtered
+}
+
+func encodeTransactionsState(transactions []indexedTransaction, totalFiles int) string {
+	state := storedState{
+		TotalFiles:   totalFiles,
+		Transactions: make([]storedTransaction, 0, len(transactions)),
+	}
+	for _, tx := range transactions {
+		state.Transactions = append(state.Transactions, storedTransaction{
+			ID:          tx.ID,
+			Date:        tx.TX.Date.Format("2006-01-02"),
+			Description: tx.TX.Description,
+			AmountCents: tx.TX.AmountCents,
+			SourceFile:  tx.TX.SourceFile,
+			SourceLine:  tx.TX.SourceLine,
+		})
+	}
+
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(encoded)
+}
+
+func decodeTransactionsState(encodedState string) ([]indexedTransaction, int, error) {
+	decoded, err := base64.StdEncoding.DecodeString(encodedState)
+	if err != nil {
+		return nil, 0, fmt.Errorf("Could not restore uploaded transactions. Re-upload the CSV file.")
+	}
+
+	var state storedState
+	if err := json.Unmarshal(decoded, &state); err != nil {
+		return nil, 0, fmt.Errorf("Could not restore uploaded transactions. Re-upload the CSV file.")
+	}
+
+	transactions := make([]indexedTransaction, 0, len(state.Transactions))
+	for _, stored := range state.Transactions {
+		date, err := time.Parse("2006-01-02", stored.Date)
+		if err != nil {
+			return nil, 0, fmt.Errorf("Could not restore uploaded transactions. Re-upload the CSV file.")
+		}
+		if strings.TrimSpace(stored.ID) == "" {
+			return nil, 0, fmt.Errorf("Could not restore uploaded transactions. Re-upload the CSV file.")
+		}
+		transactions = append(transactions, indexedTransaction{
+			ID: stored.ID,
+			TX: transaction.Transaction{
+				Date:        date,
+				Description: stored.Description,
+				AmountCents: stored.AmountCents,
+				SourceFile:  stored.SourceFile,
+				SourceLine:  stored.SourceLine,
+			},
+		})
+	}
+
+	return transactions, state.TotalFiles, nil
+}
+
+func toViewTransactions(transactions []indexedTransaction, currency string, amountMode split.AmountMode) []viewTransaction {
 	view := make([]viewTransaction, 0, len(transactions))
 	for _, tx := range transactions {
 		view = append(view, viewTransaction{
-			Date:        tx.Date.Format("2006-01-02"),
-			Description: tx.Description,
-			Amount:      split.FormatCents(currency, report.DisplayAmountCents(tx.AmountCents, amountMode)),
-			Source:      fmt.Sprintf("%s:%d", tx.SourceFile, tx.SourceLine),
+			ID:          tx.ID,
+			Date:        tx.TX.Date.Format("2006-01-02"),
+			Description: tx.TX.Description,
+			Amount:      split.FormatCents(currency, report.DisplayAmountCents(tx.TX.AmountCents, amountMode)),
+			Source:      fmt.Sprintf("%s:%d", tx.TX.SourceFile, tx.TX.SourceLine),
 		})
 	}
 	return view
@@ -379,7 +591,7 @@ const pageTemplate = `<!doctype html>
     }
     .section-head {
       display: flex;
-      align-items: baseline;
+      align-items: center;
       justify-content: space-between;
       gap: 16px;
       margin-bottom: 10px;
@@ -387,6 +599,17 @@ const pageTemplate = `<!doctype html>
     .section-head h3 {
       margin: 0;
       font-size: 15px;
+    }
+    .section-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .section-actions button {
+      padding: 8px 11px;
+      font-size: 13px;
     }
     .table-wrap {
       overflow-x: auto;
@@ -420,6 +643,14 @@ const pageTemplate = `<!doctype html>
       white-space: nowrap;
       text-align: right;
       font-variant-numeric: tabular-nums;
+    }
+    .select-cell {
+      width: 44px;
+      text-align: center;
+    }
+    .select-cell input {
+      inline-size: 16px;
+      block-size: 16px;
     }
     .empty {
       padding: 36px 18px;
@@ -475,13 +706,16 @@ const pageTemplate = `<!doctype html>
   <main>
     <div class="wrap">
       {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+      <form method="post" enctype="multipart/form-data">
+        {{if .TransactionsState}}<input type="hidden" name="transactions_state" value="{{.TransactionsState}}">{{end}}
+        {{range .IncludedIDs}}<input type="hidden" name="included_tx" value="{{.}}">{{end}}
       <div class="layout">
         <section class="panel">
           <h2>Analyze CSV Files</h2>
-          <form class="form" method="post" enctype="multipart/form-data">
+          <div class="form">
             <label>
               CSV files
-              <input type="file" name="files" accept=".csv,text/csv" multiple required>
+              <input type="file" name="files" accept=".csv,text/csv" multiple {{if not .HasStoredTransactions}}required{{end}}>
             </label>
             <div class="row">
               <label>
@@ -504,8 +738,8 @@ const pageTemplate = `<!doctype html>
               Grocery prefixes
               <textarea name="prefixes" spellcheck="false">{{.Form.Prefixes}}</textarea>
             </label>
-            <button type="submit">Analyze</button>
-          </form>
+            <button type="submit" name="action" value="analyze">Analyze</button>
+          </div>
         </section>
 
         <section class="panel">
@@ -518,18 +752,21 @@ const pageTemplate = `<!doctype html>
             </div>
             <div class="table-block">
               <div class="section-head">
-                <h3>Matched Grocery Transactions</h3>
-                <div class="subtle">{{len .Matched}} matched</div>
+                <h3>Included Transactions</h3>
+                <div class="subtle">{{len .MatchedTable.Rows}} included</div>
               </div>
-              {{template "table" .Matched}}
+              {{template "table" .MatchedTable}}
             </div>
             {{if .ShowUnmatched}}
               <div class="table-block">
                 <div class="section-head">
                   <h3>Unmatched Transactions</h3>
-                  <div class="subtle">{{len .Unmatched}} unmatched</div>
+                  <div class="section-actions">
+                    <div class="subtle">{{len .UnmatchedTable.Rows}} unmatched</div>
+                    {{if .UnmatchedTable.Rows}}<button type="submit" name="action" value="include">Include selected</button>{{end}}
+                  </div>
                 </div>
-                {{template "table" .Unmatched}}
+                {{template "table" .UnmatchedTable}}
               </div>
             {{end}}
           {{else}}
@@ -537,17 +774,30 @@ const pageTemplate = `<!doctype html>
           {{end}}
         </section>
       </div>
+      </form>
     </div>
   </main>
+  <script>
+    document.querySelectorAll('[data-select-all]').forEach((control) => {
+      const target = control.getAttribute('data-select-all');
+      const checkboxes = Array.from(document.querySelectorAll('[data-select-group="' + target + '"]'));
+      control.addEventListener('change', () => {
+        checkboxes.forEach((checkbox) => {
+          checkbox.checked = control.checked;
+        });
+      });
+    });
+  </script>
 </body>
 </html>
 
 {{define "table"}}
-  {{if .}}
+  {{if .Rows}}
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
+            {{if .Selectable}}<th class="select-cell"><input type="checkbox" data-select-all="unmatched" aria-label="Select all unmatched transactions"></th>{{end}}
             <th>Date</th>
             <th>Description</th>
             <th class="amount">Amount</th>
@@ -555,8 +805,9 @@ const pageTemplate = `<!doctype html>
           </tr>
         </thead>
         <tbody>
-          {{range .}}
+          {{range .Rows}}
             <tr>
+              {{if $.Selectable}}<td class="select-cell"><input type="checkbox" name="include_tx" value="{{.ID}}" data-select-group="unmatched" aria-label="Select transaction"></td>{{end}}
               <td>{{.Date}}</td>
               <td>{{.Description}}</td>
               <td class="amount">{{.Amount}}</td>

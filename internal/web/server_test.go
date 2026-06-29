@@ -6,6 +6,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -53,8 +54,62 @@ func TestServerPostAnalyzesUploadedCSV(t *testing.T) {
 		"APOTEKET",
 		"SEK 111,00",
 		"SEK 55,50",
-		"1 matched",
+		"1 included",
 		"1 unmatched",
+		"Include selected",
+	} {
+		if !strings.Contains(bodyText, want) {
+			t.Fatalf("body did not contain %q\nbody:\n%s", want, bodyText)
+		}
+	}
+}
+
+func TestServerPostIncludesSelectedUnmatchedTransactions(t *testing.T) {
+	server := newTestServer(t)
+	body, contentType := multipartRequestBody(t, map[string]string{
+		"amount_mode":    "absolute",
+		"currency":       "SEK",
+		"show_unmatched": "on",
+		"prefixes":       "ICA\nCOOP",
+		"activity.csv":   "Datum;Beskrivning;Belopp\n2026-05-11;COOP RADHUSET;-111,00\n2026-05-12;APOTEKET;50,00\n",
+	})
+	request := httptest.NewRequest(http.MethodPost, "/", body)
+	request.Header.Set("Content-Type", contentType)
+	response := httptest.NewRecorder()
+
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("initial status = %d, want %d\nbody:\n%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	state := hiddenFieldValue(t, response.Body.String(), "transactions_state")
+
+	body, contentType = multipartRequestBody(t, map[string]string{
+		"amount_mode":        "absolute",
+		"currency":           "SEK",
+		"show_unmatched":     "on",
+		"prefixes":           "ICA\nCOOP",
+		"transactions_state": state,
+		"include_tx":         "1",
+	})
+	request = httptest.NewRequest(http.MethodPost, "/", body)
+	request.Header.Set("Content-Type", contentType)
+	response = httptest.NewRecorder()
+
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("include status = %d, want %d\nbody:\n%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	bodyText := response.Body.String()
+	for _, want := range []string{
+		"COOP RADHUSET",
+		"APOTEKET",
+		"SEK 161,00",
+		"SEK 80,50",
+		"2 included",
+		"0 unmatched",
+		`name="included_tx" value="1"`,
 	} {
 		if !strings.Contains(bodyText, want) {
 			t.Fatalf("body did not contain %q\nbody:\n%s", want, bodyText)
@@ -81,6 +136,16 @@ func TestServerPostRequiresCSVFile(t *testing.T) {
 	if !strings.Contains(response.Body.String(), "Choose at least one American Express CSV file") {
 		t.Fatalf("body did not contain missing file error")
 	}
+}
+
+func hiddenFieldValue(t *testing.T, body string, name string) string {
+	t.Helper()
+	pattern := regexp.MustCompile(`name="` + regexp.QuoteMeta(name) + `" value="([^"]+)"`)
+	matches := pattern.FindStringSubmatch(body)
+	if len(matches) != 2 {
+		t.Fatalf("body did not contain hidden field %q\nbody:\n%s", name, body)
+	}
+	return matches[1]
 }
 
 func newTestServer(t *testing.T) *Server {
