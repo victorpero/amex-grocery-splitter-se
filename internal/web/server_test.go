@@ -117,6 +117,58 @@ func TestServerPostIncludesSelectedUnmatchedTransactions(t *testing.T) {
 	}
 }
 
+func TestServerPostRemovesSelectedMatchedTransactions(t *testing.T) {
+	server := newTestServer(t)
+	body, contentType := multipartRequestBody(t, map[string]string{
+		"amount_mode":    "absolute",
+		"currency":       "SEK",
+		"show_unmatched": "on",
+		"prefixes":       "ICA\nCOOP",
+		"activity.csv":   "Datum;Beskrivning;Belopp\n2026-05-11;COOP RADHUSET;-111,00\n2026-05-12;APOTEKET;50,00\n",
+	})
+	request := httptest.NewRequest(http.MethodPost, "/", body)
+	request.Header.Set("Content-Type", contentType)
+	response := httptest.NewRecorder()
+
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("initial status = %d, want %d\nbody:\n%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	state := hiddenFieldValue(t, response.Body.String(), "transactions_state")
+
+	body, contentType = multipartRequestBody(t, map[string]string{
+		"amount_mode":        "absolute",
+		"currency":           "SEK",
+		"show_unmatched":     "on",
+		"prefixes":           "ICA\nCOOP",
+		"transactions_state": state,
+		"remove_tx":          "0",
+	})
+	request = httptest.NewRequest(http.MethodPost, "/", body)
+	request.Header.Set("Content-Type", contentType)
+	response = httptest.NewRecorder()
+
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("remove status = %d, want %d\nbody:\n%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	bodyText := response.Body.String()
+	for _, want := range []string{
+		"COOP RADHUSET",
+		"APOTEKET",
+		"SEK 0,00",
+		"0 included",
+		"2 unmatched",
+		`name="excluded_tx" value="0"`,
+	} {
+		if !strings.Contains(bodyText, want) {
+			t.Fatalf("body did not contain %q\nbody:\n%s", want, bodyText)
+		}
+	}
+}
+
 func TestServerPostRequiresCSVFile(t *testing.T) {
 	server := newTestServer(t)
 	body, contentType := multipartRequestBody(t, map[string]string{

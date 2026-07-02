@@ -42,6 +42,7 @@ type pageData struct {
 	ShowUnmatched         bool
 	TransactionsState     string
 	IncludedIDs           []string
+	ExcludedIDs           []string
 	TotalAmount           string
 	PerPerson             string
 }
@@ -61,8 +62,12 @@ type viewTransaction struct {
 }
 
 type transactionTable struct {
-	Rows       []viewTransaction
-	Selectable bool
+	Rows           []viewTransaction
+	Selectable     bool
+	SelectName     string
+	SelectGroup    string
+	SelectAllLabel string
+	SelectLabel    string
 }
 
 type indexedTransaction struct {
@@ -187,25 +192,39 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	includedIDs := includedIDsFromRequest(r)
+	excludedIDs := excludedIDsFromRequest(r)
 	if len(files) > 0 {
 		includedIDs = map[string]struct{}{}
+		excludedIDs = map[string]struct{}{}
 	}
-	analysis := analyzeTransactions(transactions, groceryMatcher, includedIDs, amountMode)
+	applyManualSelectionChanges(r, includedIDs, excludedIDs)
+	analysis := analyzeTransactions(transactions, groceryMatcher, includedIDs, excludedIDs, amountMode)
 	filteredIncludedIDs := filterIncludedIDs(transactions, includedIDs)
+	filteredExcludedIDs := filterIncludedIDs(transactions, excludedIDs)
 
 	data.HasResult = true
 	data.HasStoredTransactions = true
 	data.TotalFiles = totalFiles
 	data.TotalRows = len(transactions)
 	data.MatchedTable = transactionTable{
-		Rows: toViewTransactions(analysis.Matched, form.Currency, amountMode),
+		Rows:           toViewTransactions(analysis.Matched, form.Currency, amountMode),
+		Selectable:     true,
+		SelectName:     "remove_tx",
+		SelectGroup:    "matched",
+		SelectAllLabel: "Select all included transactions",
+		SelectLabel:    "Select transaction to remove",
 	}
 	data.UnmatchedTable = transactionTable{
-		Rows:       toViewTransactions(analysis.Unmatched, form.Currency, amountMode),
-		Selectable: true,
+		Rows:           toViewTransactions(analysis.Unmatched, form.Currency, amountMode),
+		Selectable:     true,
+		SelectName:     "include_tx",
+		SelectGroup:    "unmatched",
+		SelectAllLabel: "Select all unmatched transactions",
+		SelectLabel:    "Select transaction to include",
 	}
 	data.TransactionsState = encodeTransactionsState(transactions, totalFiles)
 	data.IncludedIDs = filteredIncludedIDs
+	data.ExcludedIDs = filteredExcludedIDs
 	data.TotalAmount = split.FormatCents(form.Currency, analysis.Result.TotalCents)
 	data.PerPerson = split.FormatHalfCents(form.Currency, analysis.Result.TotalCents)
 
@@ -269,11 +288,15 @@ type indexedAnalysis struct {
 	Result    split.Result
 }
 
-func analyzeTransactions(transactions []indexedTransaction, groceryMatcher *matcher.PrefixMatcher, includedIDs map[string]struct{}, amountMode split.AmountMode) indexedAnalysis {
+func analyzeTransactions(transactions []indexedTransaction, groceryMatcher *matcher.PrefixMatcher, includedIDs map[string]struct{}, excludedIDs map[string]struct{}, amountMode split.AmountMode) indexedAnalysis {
 	matched := make([]indexedTransaction, 0)
 	unmatched := make([]indexedTransaction, 0)
 
 	for _, tx := range transactions {
+		if _, manuallyExcluded := excludedIDs[tx.ID]; manuallyExcluded {
+			unmatched = append(unmatched, tx)
+			continue
+		}
 		_, manuallyIncluded := includedIDs[tx.ID]
 		if manuallyIncluded || groceryMatcher.IsGrocery(tx.TX.Description) {
 			matched = append(matched, tx)
@@ -310,18 +333,36 @@ func unindexedTransactions(transactions []indexedTransaction) []transaction.Tran
 }
 
 func includedIDsFromRequest(r *http.Request) map[string]struct{} {
-	included := make(map[string]struct{})
-	for _, id := range r.MultipartForm.Value["included_tx"] {
-		if id = strings.TrimSpace(id); id != "" {
-			included[id] = struct{}{}
-		}
-	}
+	return idsFromValues(r.MultipartForm.Value["included_tx"])
+}
+
+func excludedIDsFromRequest(r *http.Request) map[string]struct{} {
+	return idsFromValues(r.MultipartForm.Value["excluded_tx"])
+}
+
+func applyManualSelectionChanges(r *http.Request, includedIDs map[string]struct{}, excludedIDs map[string]struct{}) {
 	for _, id := range r.MultipartForm.Value["include_tx"] {
 		if id = strings.TrimSpace(id); id != "" {
-			included[id] = struct{}{}
+			includedIDs[id] = struct{}{}
+			delete(excludedIDs, id)
 		}
 	}
-	return included
+	for _, id := range r.MultipartForm.Value["remove_tx"] {
+		if id = strings.TrimSpace(id); id != "" {
+			delete(includedIDs, id)
+			excludedIDs[id] = struct{}{}
+		}
+	}
+}
+
+func idsFromValues(values []string) map[string]struct{} {
+	ids := make(map[string]struct{})
+	for _, id := range values {
+		if id = strings.TrimSpace(id); id != "" {
+			ids[id] = struct{}{}
+		}
+	}
+	return ids
 }
 
 func filterIncludedIDs(transactions []indexedTransaction, includedIDs map[string]struct{}) []string {
@@ -709,6 +750,7 @@ const pageTemplate = `<!doctype html>
       <form method="post" enctype="multipart/form-data">
         {{if .TransactionsState}}<input type="hidden" name="transactions_state" value="{{.TransactionsState}}">{{end}}
         {{range .IncludedIDs}}<input type="hidden" name="included_tx" value="{{.}}">{{end}}
+        {{range .ExcludedIDs}}<input type="hidden" name="excluded_tx" value="{{.}}">{{end}}
       <div class="layout">
         <section class="panel">
           <h2>Analyze CSV Files</h2>
@@ -753,7 +795,10 @@ const pageTemplate = `<!doctype html>
             <div class="table-block">
               <div class="section-head">
                 <h3>Included Transactions</h3>
-                <div class="subtle">{{len .MatchedTable.Rows}} included</div>
+                <div class="section-actions">
+                  <div class="subtle">{{len .MatchedTable.Rows}} included</div>
+                  {{if .MatchedTable.Rows}}<button type="submit" name="action" value="remove">Remove selected</button>{{end}}
+                </div>
               </div>
               {{template "table" .MatchedTable}}
             </div>
@@ -797,7 +842,7 @@ const pageTemplate = `<!doctype html>
       <table>
         <thead>
           <tr>
-            {{if .Selectable}}<th class="select-cell"><input type="checkbox" data-select-all="unmatched" aria-label="Select all unmatched transactions"></th>{{end}}
+            {{if .Selectable}}<th class="select-cell"><input type="checkbox" data-select-all="{{.SelectGroup}}" aria-label="{{.SelectAllLabel}}"></th>{{end}}
             <th>Date</th>
             <th>Description</th>
             <th class="amount">Amount</th>
@@ -807,7 +852,7 @@ const pageTemplate = `<!doctype html>
         <tbody>
           {{range .Rows}}
             <tr>
-              {{if $.Selectable}}<td class="select-cell"><input type="checkbox" name="include_tx" value="{{.ID}}" data-select-group="unmatched" aria-label="Select transaction"></td>{{end}}
+              {{if $.Selectable}}<td class="select-cell"><input type="checkbox" name="{{$.SelectName}}" value="{{.ID}}" data-select-group="{{$.SelectGroup}}" aria-label="{{$.SelectLabel}}"></td>{{end}}
               <td>{{.Date}}</td>
               <td>{{.Description}}</td>
               <td class="amount">{{.Amount}}</td>
